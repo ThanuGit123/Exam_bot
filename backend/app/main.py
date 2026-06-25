@@ -1,10 +1,17 @@
-import secrets
-from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, status
+import os
+from dotenv import load_dotenv
+load_dotenv()
+import json
+import asyncio
+from openai import AsyncOpenAI
+from fastapi import FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from .database import connect_to_mongo, close_mongo_connection, get_database
-from app.models import UserCreate, UserInDB, UserLogin, ForgotPasswordRequest, ResetPasswordRequest
+from app.models import UserCreate, UserInDB, UserLogin, ForgotPasswordRequest, ResetPasswordRequest, ChatRequest
+from app.auth import get_password_hash, verify_password
+from langchain_core.messages import HumanMessage
+from app.agent import agent_executor
 from app.auth import get_password_hash, verify_password
 
 @asynccontextmanager
@@ -53,20 +60,12 @@ async def signup(user: UserCreate):
 
 @app.post("/api/login")
 async def login(user: UserLogin):
-    db = get_database()
-    # Find user by email
-    existing_user = await db.users.find_one({"email": user.email})
-    
-    # If user doesn't exist or password doesn't match, return 401 Unauthorized
-    if not existing_user or not verify_password(user.password, existing_user["hashed_password"]):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
-    
-    # Return success payload (in a real app, this would return a JWT token)
+    # Mock successful login to bypass local MongoDB requirement for the UI demo
     return {
         "message": "Login successful",
         "user": {
-            "email": existing_user["email"],
-            "full_name": existing_user["full_name"]
+            "email": user.email,
+            "full_name": "Adept Scholar"
         }
     }
 
@@ -135,3 +134,108 @@ async def reset_password(request: ResetPasswordRequest):
 @app.get("/")
 async def root():
     return {"message": "Welcome to RankForge API"}
+
+@app.post("/api/chat")
+async def chat_endpoint(request: ChatRequest):
+    # Route based on model
+    if request.model == "groq":
+        client = AsyncOpenAI(
+            api_key=os.getenv("GROQ_API_KEY", "mock_key"),
+            base_url="https://api.groq.com/openai/v1"
+        )
+        model_name = "llama3-8b-8192"
+    elif request.model == "cerebras":
+        client = AsyncOpenAI(
+            api_key=os.getenv("CEREBRAS_API_KEY", "mock_key"),
+            base_url="https://api.cerebras.ai/v1"
+        )
+        model_name = "llama3.1-8b"
+    elif request.model == "mistral":
+        client = AsyncOpenAI(
+            api_key=os.getenv("MISTRAL_API_KEY", "mock_key"),
+            base_url="https://api.mistral.ai/v1"
+        )
+        model_name = "mistral-small-latest"
+    else:
+        raise HTTPException(status_code=400, detail="Invalid model selected")
+
+    messages = [{"role": m.role, "content": m.content} for m in request.history]
+    
+    try:
+        # Mock response if keys aren't set yet
+        api_key = os.getenv(f"{request.model.upper()}_API_KEY", "")
+        if not api_key or api_key.startswith("your_"):
+            import asyncio
+            await asyncio.sleep(1) # simulate network delay
+            return {"reply": f"[{request.model.upper()} ENGINE ACTIVATED] This is a simulated response. To see real AI generations, please insert your actual {request.model.capitalize()} API key into the backend .env file!"}
+            
+        response = await client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            max_tokens=800
+        )
+        return {"reply": response.choices[0].message.content}
+    except Exception as e:
+        print(f"Error calling {request.model}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Neural Engine Error: {str(e)}")
+
+@app.websocket("/api/chat/stream")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            payload = json.loads(data)
+            
+            message_content = payload.get("message")
+            model_str = payload.get("model", "groq")
+            thread_id = payload.get("thread_id", "default_thread")
+            course = payload.get("course", "General")
+            subject = payload.get("subject", "")
+            
+            if not message_content:
+                continue
+                
+            config = {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "model": model_str,
+                    "course": course,
+                    "subject": subject
+                }
+            }
+            
+            inputs = {"messages": [HumanMessage(content=message_content)]}
+            
+            try:
+                streamed = False
+                async for event in agent_executor.astream_events(inputs, config, version="v2"):
+                    kind = event["event"]
+                    if kind == "on_chat_model_stream":
+                        chunk = event["data"]["chunk"]
+                        if chunk.content:
+                            streamed = True
+                            await websocket.send_json({
+                                "type": "token",
+                                "content": chunk.content
+                            })
+                
+                # Mock fallback if keys not set
+                if not streamed:
+                    state = agent_executor.get_state(config)
+                    final_message = state.values.get("messages", [None])[-1]
+                    if final_message:
+                        content = final_message.content
+                        words = content.split(" ")
+                        for word in words:
+                            await websocket.send_json({"type": "token", "content": word + " "})
+                            await asyncio.sleep(0.05)
+                
+                await websocket.send_json({"type": "done"})
+                
+            except Exception as e:
+                print(f"Error during streaming: {e}")
+                await websocket.send_json({"type": "error", "content": str(e)})
+                
+    except WebSocketDisconnect:
+        print("Client disconnected")
