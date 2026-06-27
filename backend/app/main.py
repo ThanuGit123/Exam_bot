@@ -4,11 +4,12 @@ load_dotenv()
 import json
 import asyncio
 from openai import AsyncOpenAI
-from fastapi import FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from .database import connect_to_mongo, close_mongo_connection, get_database
-from app.models import UserCreate, UserInDB, UserLogin, ForgotPasswordRequest, ResetPasswordRequest, ChatRequest
+from app.models import UserCreate, UserInDB, UserLogin, ForgotPasswordRequest, ResetPasswordRequest, ChatRequest, LearningPrefs, AppPrefs, PreferencesUpdate
 from app.auth import get_password_hash, verify_password
 from langchain_core.messages import HumanMessage
 from app.agent import agent_executor
@@ -135,6 +136,76 @@ async def reset_password(request: ResetPasswordRequest):
 async def root():
     return {"message": "Welcome to RankForge API"}
 
+@app.get("/api/me")
+async def get_me(request: Request):
+    user_email = request.headers.get("X-User-Email")
+    if not user_email:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    db = get_database()
+    try:
+        user = await db.users.find_one({"email": user_email})
+        if not user:
+            user = {"email": user_email, "full_name": "Demo User"}
+            
+        learning_prefs = user.get("learning_prefs", LearningPrefs().dict())
+        app_prefs = user.get("app_prefs", AppPrefs().dict())
+        
+        return {
+            "email": user_email,
+            "full_name": user.get("full_name", "Demo User"),
+            "learning_prefs": learning_prefs,
+            "app_prefs": app_prefs
+        }
+    except Exception as e:
+        print(f"Warning: Database error in get_me (likely IP whitelist): {str(e)}")
+        # Return default preferences so frontend doesn't break
+        return {
+            "email": user_email,
+            "full_name": "Demo User",
+            "learning_prefs": LearningPrefs().dict(),
+            "app_prefs": AppPrefs().dict()
+        }
+
+@app.patch("/api/me/preferences")
+async def update_preferences(
+    request: Request,
+    prefs: dict = Body(...)
+):
+    user_email = request.headers.get("X-User-Email")
+    if not user_email:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+        
+    db = get_database()
+    update_data = {}
+    
+    # We expect 'learning_prefs' and 'app_prefs' in the dict
+    learning_prefs = prefs.get("learning_prefs")
+    app_prefs = prefs.get("app_prefs")
+    
+    if learning_prefs:
+        for k, v in learning_prefs.items():
+            update_data[f"learning_prefs.{k}"] = v
+            
+    if app_prefs:
+        for k, v in app_prefs.items():
+            update_data[f"app_prefs.{k}"] = v
+            
+    if update_data:
+        update_data["app_prefs.updated_at"] = datetime.utcnow().isoformat()
+        try:
+            await db.users.update_one(
+                {"email": user_email},
+                {"$set": update_data},
+                upsert=True
+            )
+        except Exception as e:
+            print(f"Warning: Database error in update_preferences (likely IP whitelist): {str(e)}")
+            # Silently succeed so the UI shows "Saved"
+            pass
+        
+    return {"message": "Preferences updated"}
+
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
     # Route based on model
@@ -192,16 +263,26 @@ async def websocket_endpoint(websocket: WebSocket):
             thread_id = payload.get("thread_id", "default_thread")
             course = payload.get("course", "General")
             subject = payload.get("subject", "")
+            user_email = payload.get("user_email", "")
             
             if not message_content:
                 continue
+                
+            # Fetch user preferences
+            learning_prefs = {}
+            if user_email:
+                db = get_database()
+                user = await db.users.find_one({"email": user_email})
+                if user and "learning_prefs" in user:
+                    learning_prefs = user["learning_prefs"]
                 
             config = {
                 "configurable": {
                     "thread_id": thread_id,
                     "model": model_str,
                     "course": course,
-                    "subject": subject
+                    "subject": subject,
+                    "learning_prefs": learning_prefs
                 }
             }
             

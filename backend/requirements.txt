@@ -11,3 +11,7 @@ langgraph
 langchain-openai 
 websockets
 python-dotenv
+chromadb
+langchain-chroma
+sentence-transformers
+pypdf

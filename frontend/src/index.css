@@ -21,3 +21,7 @@ body {
 .animation-delay-4000 {
   animation-delay: 4s;
 }
+
+html.large-text {
+  font-size: 115%;
+}

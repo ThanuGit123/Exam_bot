@@ -4,6 +4,7 @@ import {
   User, Moon, Sun, MoreHorizontal, GraduationCap, Copy, Bookmark, ThumbsUp, 
   Paperclip, Mic, Code, List, Send, Check, CheckCheck, X, Target
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 function Chat() {
   const [messages, setMessages] = useState([
@@ -139,7 +140,8 @@ function Chat() {
       model: 'groq',
       thread_id: 'session_1',
       course: userCourse,
-      subject: userSubject
+      subject: userSubject,
+      user_email: localStorage.getItem('userEmail')
     }));
     
     setInput('');
@@ -264,9 +266,9 @@ function Chat() {
 
         {/* Bottom Actions */}
         <div className="p-6 space-y-4 border-t border-gray-200/50 dark:border-gray-800/50">
-          <button className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white w-full">
+          <a href="/settings" className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white w-full cursor-pointer">
             <Settings className="w-4 h-4" /> Settings
-          </button>
+          </a>
           <button className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white w-full">
             <HelpCircle className="w-4 h-4" /> Help Center
           </button>

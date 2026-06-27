@@ -30,7 +30,8 @@ function Login() {
         throw new Error(data.detail || 'Login failed');
       }
 
-      // Success - Redirect to practice chat
+      // Success - Store email for preferences scoping and Redirect to practice chat
+      localStorage.setItem('userEmail', formData.email);
       navigate('/chat');
     } catch (err) {
       setError(err.message);
